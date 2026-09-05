@@ -1,0 +1,181 @@
+version: '3.8'
+
+services:
+  # MySQL Database
+  mysql:
+    image: mysql:8.0
+    container_name: e-market-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-e_market}
+      MYSQL_USER: ${MYSQL_USER:-emarket_user}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-emarket_password}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+      - ./database/seeders:/docker-entrypoint-initdb.d/seeders
+    networks:
+      - e-market-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 20s
+      retries: 10
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: e-market-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - e-market-network
+    command: redis-server --appendonly yes
+
+  # RabbitMQ Message Broker
+  rabbitmq:
+    image: rabbitmq:3.12-management-alpine
+    container_name: e-market-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-guest}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - e-market-network
+
+  # PHP REST API
+  php-api:
+    build:
+      context: ./backend/php-api
+      dockerfile: Dockerfile
+    container_name: e-market-php-api
+    ports:
+      - "8000:8000"
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_NAME: ${MYSQL_DATABASE:-e_market}
+      DB_USER: ${MYSQL_USER:-emarket_user}
+      DB_PASS: ${MYSQL_PASSWORD:-emarket_password}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      JWT_SECRET: ${JWT_SECRET}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      rabbitmq:
+        condition: service_started
+    volumes:
+      - ./backend/php-api:/app
+    networks:
+      - e-market-network
+
+  # Java Microservices
+  java-services:
+    build:
+      context: ./backend/java-services
+      dockerfile: Dockerfile
+    container_name: e-market-java-services
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-e_market}
+      SPRING_DATASOURCE_USERNAME: ${MYSQL_USER:-emarket_user}
+      SPRING_DATASOURCE_PASSWORD: ${MYSQL_PASSWORD:-emarket_password}
+      SPRING_REDIS_HOST: redis
+      SPRING_REDIS_PORT: 6379
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      rabbitmq:
+        condition: service_started
+    volumes:
+      - ./backend/java-services:/app
+    networks:
+      - e-market-network
+
+  # C++ High-Performance Engine
+  cpp-engine:
+    build:
+      context: ./backend/cpp-engine
+      dockerfile: Dockerfile
+    container_name: e-market-cpp-engine
+    ports:
+      - "9000:9000"
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_USER: ${MYSQL_USER:-emarket_user}
+      MYSQL_PASS: ${MYSQL_PASSWORD:-emarket_password}
+      MYSQL_DB: ${MYSQL_DATABASE:-e_market}
+    depends_on:
+      - mysql
+      - redis
+    volumes:
+      - ./backend/cpp-engine:/app
+      - cpp_build:/app/build
+    networks:
+      - e-market-network
+
+  # React Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: e-market-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      REACT_APP_API_URL: http://localhost:8000/api
+    depends_on:
+      - php-api
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    networks:
+      - e-market-network
+
+  # React Admin Dashboard
+  admin:
+    build:
+      context: ./admin
+      dockerfile: Dockerfile
+    container_name: e-market-admin
+    ports:
+      - "3001:3000"
+    environment:
+      REACT_APP_ADMIN_API_URL: http://localhost:8000/api
+    depends_on:
+      - php-api
+    volumes:
+      - ./admin:/app
+      - /app/node_modules
+    networks:
+      - e-market-network
+
+volumes:
+  mysql_data:
+  redis_data:
+  rabbitmq_data:
+  cpp_build:
+
+networks:
+  e-market-network:
+    driver: bridge
